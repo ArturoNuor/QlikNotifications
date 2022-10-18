@@ -1,0 +1,195 @@
+///$tab Main
+SET ThousandSep=',';
+SET DecimalSep='.';
+SET MoneyThousandSep=',';
+SET MoneyDecimalSep='.';
+SET MoneyFormat='$ ###0.00;-$ ###0.00';
+SET TimeFormat='h:mm:ss TT';
+SET DateFormat='M/D/YYYY';
+SET TimestampFormat='M/D/YYYY h:mm:ss[.fff] TT';
+SET FirstWeekDay=6;
+SET BrokenWeeks=1;
+SET ReferenceDay=0;
+SET FirstMonthOfYear=1;
+SET CollationLocale='en-US';
+SET CreateSearchIndexOnReload=1;
+SET MonthNames='Jan;Feb;Mar;Apr;May;Jun;Jul;Aug;Sep;Oct;Nov;Dec';
+SET LongMonthNames='January;February;March;April;May;June;July;August;September;October;November;December';
+SET DayNames='Mon;Tue;Wed;Thu;Fri;Sat;Sun';
+SET LongDayNames='Monday;Tuesday;Wednesday;Thursday;Friday;Saturday;Sunday';
+SET NumericalAbbreviation='3:k;6:M;9:G;12:T;15:P;18:E;21:Z;24:Y;-3:m;-6:μ;-9:n;-12:p;-15:f;-18:a;-21:z;-24:y';
+
+
+///$tab Sales Data
+Sales:
+LOAD
+    "Sale ID",
+    "Sale Type",
+    Platform,
+    "Sale Date",
+    "Total Sale",
+    Seller
+FROM [lib://DataFiles/Sample Notitia Sales.xlsx]
+(ooxml, embedded labels, table is Sheet1);
+
+SalesRpt:
+Load
+	Seller as "Top Seller",
+    Sum("Total Sale") as "Total Sale of Seller"
+Resident Sales
+Group By Seller
+Order By "Total Sale" desc;
+
+TotalSalesSum:
+LOAD
+Sum("Total Sale of Seller") as SumSales
+resident SalesRpt;
+
+
+///$tab MS Teams
+// Define webhook for the Teams channel you're posting to.
+// You need to create this webhook in Microsoft Teams, then paste the webhook URL in the string below
+let vTeamsWebhook = 'https://notitia.webhook.office.com/webhookb2/6a06b6a0-735d-461f-8605-f32fc64afe4e@71a3136a-a5e2-4bc9-bef9-82657c5d4d7f/IncomingWebhook/8927c09f62e04d83b354306d4cf214f8/d159148f-4c91-470e-93e7-833aa97addc0';
+
+// You need a data connection called "PostMessageToTeams" for this app to reload correctly. 
+
+
+// >>>>>>>>>>>>>>>>>>>>>>>>>>>
+// Define subs
+// >>>>>>>>>>>>>>>>>>>>>>>>>>>
+
+// ---------------------------------------------------------------------------
+// Subs for posting messages to Microsoft Teams channels. 
+// 
+// Posting messages to Teams channels can be used for various things:
+// - Notifying developers and end users that reloads have finished and that apps now contain updated data
+// - Provide a feedback mechanism to developers during long-running app reloads. 
+//   I.e. providing continuous insight into the question "how far along is my ongoing reload?"
+// - Notify developers or app owners that some metric or parameter has reached some value during 
+//   the most recent reload. I.e. a form of alerting.
+//
+// ---------------------------------------------------------------------------
+// Shared code that does the actual posting to the Teams API
+Sub CallTeamsAPI(vL.WebHookURL2, vL.Body)
+    // Replace " with ' in JSON to make it compliant with what the Teams API expects. 
+    let vL.TeamsMessage = Replace('$(vL.Body)', '"', Chr(39));
+    
+    // Post message to Teams
+    LIB CONNECT TO 'PostMessageToTeams';
+
+    RestConnectorMasterTable:
+    SQL SELECT 
+        "col_1"
+    FROM CSV(header off, delimiter ",", quote """") "CSV_source"
+    WITH CONNECTION(
+        Body "$(vL.TeamsMessage)",
+        Url "$(vL.WebHookURL2)"
+    );
+
+    [CSV_source]:
+    LOAD
+        [col_1] AS [col_1]
+    RESIDENT RestConnectorMasterTable;
+
+    // Clean up
+    Drop Tables RestConnectorMasterTable, CSV_source;
+    set vL.WebHookURL2 = ;
+    set vL.Body = ;
+    set vL.TeamsMessage = ;
+End Sub
+
+
+
+// Post generic message to a Teams channel.
+// No title or anything - just a simple message.
+Sub PostToTeamsChannel_GenericMessage(vL.WebHookURL, vL.Message)
+    let vL.Tmp = '{"text": "$(vL.Message)"}';
+    Call CallTeamsAPI('$(vL.WebHookURL)', '$(vL.Tmp)');
+    // Clean up
+    set vL.Tmp = ;
+    set vL.WebHookURL = ;
+    set vL.Message = ;
+End Sub
+
+
+// Post a notification from a Sense app to a Microsoft Teams channel in the form of a message card.
+// The card will have title, subtitle and two lines of customisable information, together with 
+// a button that when clicked will open the app from which the message was sent.
+// 
+// This is useful for example for app reload notifications. 
+// If vFactTitle2 and vFactValue2 are empty strings (''), that line will be excluded from the message card.
+Sub PostToTeamsChannel_AppNotification(vL.AppBaseURL, vL.WebHookURL, vL.Title, vL.SubTitle, vL.FactTitle1, vL.FactValue1, vL.FactTitle2, vL.FactValue2)
+    // Post message to MS Teams channel.
+    // More info here: https://docs.microsoft.com/en-us/microsoftteams/platform/concepts/connectors
+
+    // Set up general info about the message
+    let vL.Summary = 'Info message from Qlik Sense';
+
+    // Icon to use in the message. NOTE: The icon must be publicly available online,
+    // as it is accessed by Microsoft's Teams service.
+    // Icons from for example Google Material Design's GitHub repository can be used, these will however 
+    // be black and white only.
+    //let vL.IconURL = 'https://teams.microsoft.com/_#/png/viewer/personal/https:~2F~2Fnotitia-my.sharepoint.com~2Fpersonal~2Farturo_ortega_notitia_consulting~2FDocuments~2FReportIcon.png?baseUrl=https:~2F~2Fnotitia-my.sharepoint.com~2Fpersonal~2Farturo_ortega_notitia_consulting&fileId=ad31909c-b3ab-401c-9198-59d10e319abb&ctx=personal&rootContext=items_view&viewerAction=view';
+	 //let vL.IconURL = 'https://raw.githubusercontent.com/google/material-design-icons/master/action/1x_web/ic_thumb_up_black_48dp.png';
+    
+    // Build JSON that will be sent in body of HTTP POST to the Office365 Teams API.
+    // Include a button that can be used to open the app
+
+    // ==============================================================
+    // ==> NOTE the different URLs needed for LAB, DEV and PROD!! <==
+    // ==============================================================
+    let vL.AppURL = '$(vL.AppBaseURL)' & DocumentName();
+    let vL.Tmp = '{"@type": "MessageCard","@context": "http://schema.org/extensions","themeColor": "0076D7","summary": "$(vL.Summary)","sections": [{"facts": [ {"name": "$(vL.FactTitle1)", "value": "$(vL.FactValue1)"}, {"name": "$(vL.FactTitle2)", "value": "$(vL.FactValue2)"}], "markdown": true}], "potentialAction": [{"@type": "OpenUri", "name": "Sales Report", "targets": [{"os": "default", "uri": "$(vL.AppURL)"}]}]}';
+    Call CallTeamsAPI('$(vL.WebHookURL)', '$(vL.Tmp)');
+
+    // Clean up
+	set vL.AppBaseURL = ;
+    set vL.WebHookURL = ;
+    set vL.Title = ;
+    set vL.SubTitle = ;
+    set vL.FactTitle1 = ;
+    set vL.FactValue1 = ;
+    set vL.FactTitle2 = ;
+    set vL.FactValue2 = ;
+    set vL.Summary = ;
+    set vL.IconURL = ;
+    set vL.AppURL = ;
+    set vL.Tmp = ;
+End Sub
+
+
+// >>>>>>>>>>>>>>>>>>>>>>>>>>>
+// Send basic message
+// >>>>>>>>>>>>>>>>>>>>>>>>>>>
+let vMsg = '<h1>Posting message to Teams from Qlik Sense</h1> 
+
+<b>Weekly Notitia Sales Report from Qlik Sense</b>
+';
+
+// Send the message
+Call PostToTeamsChannel_GenericMessage('$(vTeamsWebhook)', '$(vMsg)');
+
+
+
+
+// >>>>>>>>>>>>>>>>>>>>>>>>>>>
+// Send more advanced message
+// >>>>>>>>>>>>>>>>>>>>>>>>>>>
+// vSenseBaseURL is the URL where Sense apps are accessed, less the App ID
+Let vTotalSales = fieldvalue('SumSales',1);
+Let vBestSeller = fieldvalue('Top Seller',1);
+Let vTotalBestSeller = fieldvalue('Total Sale of Seller',1);
+
+let vSenseBaseURL = 'https://uavzecaz8dfeey0.ap.qlikcloud.com/sense/app/b3ab914a-4015-4494-b83d-85fe0544c5b6/sheet/e6151ca5-8ff4-4bf6-a8d7-a589d11f9fac/state/analysis';
+let vTitle = 'Daily sales in Qlik Sense have been updated';
+let vSubtitle = 'Click the button to open Notitia Sales Report';
+let vFactTitle1 = 'Total sales';
+let vFactValue1 = Num(vTotalSales, '$#,##0.00');
+let vFactTitle2 = 'Best Seller ';
+let vFactValue2 = vBestSeller &' with '& Num(vTotalBestSeller, '$#,##0.00');
+
+// Send the message
+Call PostToTeamsChannel_AppNotification('$(vSenseBaseURL)', '$(vTeamsWebhook)', '$(vTitle)', '$(vSubTitle)', '$(vFactTitle1)', '$(vFactValue1)', '$(vFactTitle2)', '$(vFactValue2)');
+
+DROP Table SalesRpt;
+DROP Table TotalSalesSum;
