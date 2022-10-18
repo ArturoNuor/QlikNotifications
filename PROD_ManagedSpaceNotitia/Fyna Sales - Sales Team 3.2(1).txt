@@ -1,0 +1,248 @@
+///$tab Main
+SET ThousandSep=',';
+SET DecimalSep='.';
+SET MoneyThousandSep=',';
+SET MoneyDecimalSep='.';
+SET MoneyFormat='$#,##0.00;-$#,##0.00';
+SET TimeFormat='h:mm:ss TT';
+SET DateFormat='DD/MM/YYYY';
+SET TimestampFormat='DD/MM/YYYY h:mm:ss[.fff] TT';
+SET FirstWeekDay=0;
+SET BrokenWeeks=1;
+SET ReferenceDay=0;
+SET FirstMonthOfYear=1;
+SET CollationLocale='en-AU';
+SET CreateSearchIndexOnReload=1;
+SET MonthNames='Jan;Feb;Mar;Apr;May;Jun;Jul;Aug;Sep;Oct;Nov;Dec';
+SET LongMonthNames='January;February;March;April;May;June;July;August;September;October;November;December';
+SET DayNames='Mon;Tue;Wed;Thu;Fri;Sat;Sun';
+SET LongDayNames='Monday;Tuesday;Wednesday;Thursday;Friday;Saturday;Sunday';
+
+///$tab Variables
+Set pQVDTransform = [lib://QVD Transform/];
+///$tab Fact
+Fact:
+LOAD
+    *,
+    If(WildMatch(GroupName,'Metcash*')>0,'Metcash',GroupName)  as GroupName2
+// 	,FCQty*FCCOGSPrice as [FCCOGS]
+FROM $(pQVDTransform)FactNewest.qvd
+(qvd)
+Where DocDate >= '01/07/2016'
+and GroupName <> 'Internal Sales'
+and left(ItemCode,2) <> 'PK'
+;
+Drop Field GroupName;
+
+Rename Field GroupName2 to GroupName;
+
+
+;
+
+
+//_________________ Moved to Cobine tables Tab in Transform PH 19092017_________________
+//SalesBudget:
+// Concatenate (Fact)
+// LOAD
+//     *
+// FROM $(pQVDTransform)SalesBudgetFinal.qvd
+// (qvd);
+
+// Concatenate (Fact)
+// LOAD
+//     *
+// FROM $(pQVDTransform)FC2018Final.qvd
+// (qvd);
+
+// Concatenate (Fact)
+// //RebateBudget:
+// LOAD
+//     *
+// FROM $(pQVDTransform)RebateBudget.qvd
+// (qvd);
+
+
+// Concatenate (Fact)
+// // COGSBudgetTable:
+// LOAD
+//     *
+// FROM $(pQVDTransform)COGSBudgetTable.qvd
+// (qvd);
+///$tab Line
+// left join(Fact)
+// // InvoiceLine:
+// LOAD
+//     *
+// FROM $(pQVDTransform)InvoiceLine.qvd
+// (qvd);
+
+Rebates:
+LOAD
+    *
+FROM $(pQVDTransform)Rebates.qvd
+(qvd);
+
+
+///$tab Dimensions
+BusinessPartner:
+LOAD
+    *
+FROM $(pQVDTransform)BusinessPartner.qvd
+(qvd);
+
+ItemMaster:
+LOAD
+    *
+FROM $(pQVDTransform)ItemMaster.qvd
+(qvd);
+
+COGSBudgetTableNew:
+LOAD
+    *
+FROM $(pQVDTransform)COGSBudgetTableNew.qvd
+(qvd);
+
+QtyBudgetTableNew:
+LOAD
+    *
+FROM $(pQVDTransform)QtyBudgetTableNew.qvd
+(qvd);
+
+Discount:
+LOAD
+    *
+FROM $(pQVDTransform)Discount_Final.qvd
+(qvd);
+
+DiscountGroup:
+LOAD
+    *
+FROM $(pQVDTransform)DiscountGroup_Final.qvd
+(qvd);
+
+
+
+
+///$tab Calendar
+QuartersMap:  
+MAPPING LOAD   
+rowno() as Month,  
+'Q' & Ceil (rowno()/3) as Quarter  
+AUTOGENERATE (12);  
+  
+Temp:  
+Load  
+               min(DocDate) as minDate,  
+               max(DocDate) as maxDate  
+Resident Fact;  
+  
+Let varMinDate = Num(Peek('minDate', 0, 'Temp'));  
+Let varMaxDate = Num(Peek('maxDate', 0, 'Temp'));
+
+
+
+//LET vMonthBefore = MonthEnd(Month(Today())-1);//month prior current
+
+
+DROP Table Temp;  
+  
+TempCalendar:  
+LOAD  
+               $(varMinDate) + Iterno()-1 As Num,  
+               Date($(varMinDate) + IterNo() - 1) as TempDate  
+               AutoGenerate 1 While $(varMinDate) + IterNo() -1 <= $(varMaxDate);  
+  
+MasterCalendar:
+Load *,
+	[Financial Year]& if([Fiscal Week] <10, '0'&[Fiscal Week],[Fiscal Week]) as [Financial Year Week],
+	[Financial Year]&[Financial Period] as [Financial Year Period],
+	if([Financial Year]=Year(Today()),
+	If(addmonths(DocDate,6) - YearStart(addmonths(DocDate,6))  <= addmonths(Today(),6) - YearStart(addmonths(Today(),6)), 1, 0 ),0) as CurFINYTDFlag,
+
+	if([Financial Year]=Year(Today())-1,
+	If(addmonths(DocDate,-6) - YearStart(addmonths(DocDate,-6))  <= addmonths(Today(),-6) - YearStart(addmonths(Today(),-6)), 1, 0 ),0) as LastFINYTDFlag,
+	[Financial Year]&'-'&Month as [Financial Year Month],
+    If(DocDate = today(),1) as CurrentDateFlag,
+    If(DocDate = today()-7,1) as LastWeekDateFlag,
+    if(DocDate > Monthend(today()),'F','P') as FutureDocDate
+     //
+	//[Financial Year]&Month as [FinYrMthID]
+
+;
+Load  
+               Date(TempDate) AS DocDate,
+               Num(TempDate) as NumDocDate,
+               Date(Addmonths((TempDate),6)) AS FINDocDate,
+               if(TempDate <= today(),1,0) as _FlagNotfuture, 
+               If( TempDate > addmonths(today(),-6) and TempDate <= Today(),1) as _R6Months, // Rolling 6 
+               If( TempDate > addmonths(Date(monthstart(today())-1),-6) and TempDate <=Date(monthstart(today())-1),1) as _R6MonthsPeriod, // Rolling 6
+               week(TempDate) As Week,  
+               Year(TempDate) As Year,  
+               Month(TempDate) As Month,  
+               Year(addmonths(TempDate,6)) As [Financial Year],  
+               num(Month(addmonths(TempDate,6)),'00') As [Financial Period],  
+               Day(TempDate) As Day,  
+               InMonthToDate(TempDate,today(),0)*-1 as MTD,
+               //YeartoDate(TempDate)*-1 as CurYTDFlag,  
+               //YeartoDate(TempDate)*-1 as CurFINYTDFlag,  
+                // YeartoDate(TempDate)*-1 as CurFINYTDFlag,  
+               //YeartoDate(TempDate,-1)*-1 as LastFINYTDFlag,  
+  //             YeartoDate(addmonths(TempDate,-6))*-1 as CurFINYTDFlag,  
+               //YeartoDate(addmonths(TempDate,6))*-1 as CurFINYTDFlag, 
+               YeartoDate(addmonths(TempDate,6))*-1 as CurYTDFlag,
+//                YeartoDate(addmonths(TempDate,-6),-1)*-1 as LastFINYTDFlag,  
+               inyear(TempDate, Monthstart($(varMaxDate)),-1) as RC12,  
+               date(monthstart(TempDate), 'MMM-YYYY') as MonthYear,  
+               ApplyMap('QuartersMap', month(TempDate), Null()) as Quarter,  
+               Week(weekstart(TempDate)) & '-' & WeekYear(TempDate) as WeekYear, 
+               Week(addmonths(TempDate,6)) AS [Fiscal Week],
+               WeekDay(TempDate) as WeekDay  
+Resident TempCalendar  
+Order By TempDate ASC;  
+Drop Table TempCalendar; 
+
+Left Join (Fact)
+Load
+	DocDate,
+    FutureDocDate as PeriodIndicator
+Resident MasterCalendar;
+
+NoConcatenate
+CurrentReportingDates:
+Load
+	[Financial Year]		as [Current Fin Yr],
+    [Financial Year Period]	as [Current Fin Yr Period],
+    [Financial Period]		as [Current Fin Period],
+    [Financial Year Week]	as [Current Fin Yr Week],
+    [Fiscal Week]			as [Current Fin Week]
+Resident MasterCalendar
+Where CurrentDateFlag = '1';
+
+NoConcatenate
+LastPeriodReportingDates:
+Load
+	[Fiscal Week]			as [Last Fin Week]
+Resident MasterCalendar
+Where LastWeekDateFlag = '1';
+
+//----- Set Current Year Reporting Variables ----------------------------------------------//
+Let vCurrFinYr 			= Num(Peek('Current Fin Yr', 0, 'CurrentReportingDates'));
+Let vCurrFinYrWk 		= Num(Peek('Current Fin Yr Week', 0, 'CurrentReportingDates'));
+Let vCurrFinYrPeriod 	= Num(Peek('Current Fin Yr Period', 0, 'CurrentReportingDates'));
+Let vCurrFinPeriod		= Num(Peek('Current Fin Period', 0, 'CurrentReportingDates'));
+
+//----- Set MAT / Last Period/Year etc. Reporting Variables --------------------------------//
+Let vLastFinYr 			= $(vCurrFinYr)-1;
+Let vLastFinPeriod		= if($(vCurrFinPeriod)=1,12,$(vCurrFinPeriod)-1);
+Let vLastFinYrPeriod	= $(vCurrFinYrPeriod)-100;
+Let vLastPeriodFinYrPeriod = if($(vLastFinPeriod)=1,$(vLastFinYr)&12,$(vCurrFinYrPeriod)-1);
+Let vLastFinYrWk 		= Num(Peek('Last Fin Week', 0, 'LastPeriodReportingDates'));
+
+//----- Set 2 yr last MAT / Last Period/Year etc. Reporting Variables --------------------------------//
+Let vL2YrFinYr 			= $(vCurrFinYr)-2;
+Let vL2YrFinPeriod		= if($(vCurrFinPeriod)=1,12,$(vCurrFinPeriod)-1);
+Let vL2YrFinYrPeriod	= $(vCurrFinYrPeriod)-200;
+Let vL2YrPeriodFinYrPeriod = if($(vL2YrFinPeriod)=1,$(vLastFinYr)&12,$(vLastFinYrPeriod)-1);
+Let vL2YrFinYrWk 		= $(vLastFinYrWk)-100;
+
+
